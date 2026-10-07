@@ -1,10 +1,10 @@
 #!/bin/sh
 #
 #  __MODULE__	uninstall.sh
-#  __IDENT__	V11-000
-#  __REV__	11.0
+#  __IDENT__	V12-000
+#  __REV__	12.0
 #
-#  Abstract:	Remove NAPI EEPROM MAC assignment v11 (udev rule, scripts,
+#  Abstract:	Remove NAPI EEPROM MAC assignment v12 (udev rule, scripts,
 #		remedial service) and leftovers of earlier versions.
 #		/etc/napi/mac.conf is kept unless "--purge" is given.
 #		MAC addresses already applied to running interfaces are not
@@ -13,6 +13,8 @@
 #  Usage:	./uninstall.sh [--purge]
 #
 #  Modification history:
+#	12.0	07-OCT-2026	--purge no longer touches mac.conf.bak-* files that
+#				install.sh never creates.
 #	11.0	24-SEP-2026	Initial version.
 #
 set -eu
@@ -25,7 +27,7 @@ if systemctl list-unit-files napi-mac.service >/dev/null 2>&1; then
 	systemctl disable --now napi-mac.service 2>/dev/null || true
 fi
 
-# v11 files
+# v11/v12 files
 rm -f /etc/udev/rules.d/75-napi-mac.rules
 rm -f /usr/lib/udev/napi-set-mac
 rm -f /usr/lib/napi/napi-set-macs
@@ -40,7 +42,7 @@ udevadm control --reload-rules
 systemctl daemon-reload
 
 if [ "$l_purge" -eq 1 ]; then
-	rm -f /etc/napi/mac.conf /etc/napi/mac.conf.dist /etc/napi/mac.conf.bak-*
+	rm -f /etc/napi/mac.conf /etc/napi/mac.conf.dist
 	rmdir /etc/napi 2>/dev/null || true
 	echo "NAPI MAC removed, configuration purged."
 else

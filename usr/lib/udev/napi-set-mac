@@ -1,21 +1,26 @@
 #!/usr/bin/python3
 #
 #  __MODULE__	napi-set-mac
-#  __IDENT__	V11-000
-#  __REV__	11.0
+#  __IDENT__	V12-000
+#  __REV__	12.0
 #
 #  Facility:	NAPI EEPROM MAC assignment
 #
-#  Abstract:	Assign a MAC address from the on-board NAPI EEPROM to one network
-#		interface. Called by udev on every "add" event of a net device
-#		(rule 75-napi-mac.rules) and by the remedial one-shot service
-#		napi-mac.service via /usr/lib/napi/napi-set-macs.
+#  Abstract:	Assign MAC addresses from the on-board NAPI EEPROM to network
+#		interfaces. Called by udev on every "add" event of a net device
+#		and on the "bind" event of the EEPROM itself (rule 75-napi-mac.rules),
+#		and by the remedial one-shot service napi-mac.service.
 #
-#  Usage:	napi-set-mac <ifname>
+#  Usage:	napi-set-mac <ifname>	handle one interface
+#		napi-set-mac --all	pass over all existing interfaces
+#		napi-set-mac --check	validate config and EEPROM, show the plan;
+#					changes nothing
 #
-#  Exit codes:	0  MAC set, or already correct
+#  Exit codes:	0  MAC set, or already correct (--all/--check: no errors)
+#		1  error (EEPROM invalid, ip(8) failed, config error)
 #		3  interface not matched by configuration (nothing to do)
-#		1  error (EEPROM invalid, ip(8) failed, config error); MAC unchanged
+#		4  interface matched, but the EEPROM is not available yet; it is
+#		   handled by the "--all" pass started when the EEPROM appears
 #
 #  EEPROM v3 layout, per NAPI_EEPROM_SPEC.md (2026-09-24), little-endian.
 #  Only the fields this consumer uses are listed:
@@ -32,6 +37,21 @@
 #  Configuration:	/etc/napi/mac.conf, see comments there.
 #
 #  Modification history:
+#	12.0	07-OCT-2026	"--all" and "--check" modes; the "--all" pass runs
+#				in-process and is also started by udev when the
+#				EEPROM is bound, so interfaces that appeared before
+#				the EEPROM are no longer left with random MACs.
+#				Exit code 4 for "EEPROM not available yet".
+#				Configuration validated as a whole: effective slots
+#				(W5500 defaults, native slot 1) checked for
+#				uniqueness and range, required keys reported by
+#				section, overlapping USB sections rejected,
+#				missing config file logged.
+#				"controller" may list several controllers (EHCI/OHCI).
+#				Target MAC rejected if duplicated in another valid slot.
+#				Uninitialized (all 00/FF) EEPROM reported as such.
+#				Interface left down after a failed restore is reported.
+#				ip(8) looked up in /usr/sbin, /sbin, /usr/bin, /bin.
 #	11.0	24-SEP-2026	Layout aligned with NAPI_EEPROM_SPEC.md: platform_id and
 #				mac_count range checks added, CRC verified before fields.
 #	10.0	24-SEP-2026	Moved from udev-settle one-shot pass to udev RUN rule.
@@ -54,9 +74,11 @@ import struct
 import subprocess
 import sys
 import syslog
+from dataclasses import dataclass
 
 EEPROM_PATH	= "/sys/bus/i2c/devices/1-0050/eeprom"
 CONFIG_PATH	= "/etc/napi/mac.conf"
+SYS_CLASS_NET	= "/sys/class/net"
 
 EEPROM_SIZE	= 0x7E		# bytes covered by the v3 layout including CRC
 EEPROM_MAGIC	= b"NAPI"
@@ -69,20 +91,57 @@ MAC_COUNT_OFF	= 0x17
 MAC_BASE_OFF	= 0x38
 MAC_LEN		= 6
 MAC_SLOTS	= 8
+NATIVE_SLOT	= 1
 
 EXIT_OK		= 0
 EXIT_ERROR	= 1
 EXIT_NOMATCH	= 3
+EXIT_DEFERRED	= 4
 
-IP_BIN		= "/sbin/ip"
+IP_CANDIDATES	= ("/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip")
 
 # Sections describing W5500 SPI controllers: (section, default spi bus name, default slot)
 W5500_SECTIONS	= (("w5500_spi1", "spi1", 2), ("w5500_spi2", "spi2", 3))
 # Sections describing built-in USB Ethernet adapters
 USB_SECTIONS	= ("usb_eth_1", "usb_eth_2", "usb_eth_3", "usb_eth_4")
+KNOWN_SECTIONS	= ("mac", *(s for s, _, _ in W5500_SECTIONS), *USB_SECTIONS)
 
 # True when started by udev (RUN+=), stdout is discarded there.
 IN_UDEV		= "ACTION" in os.environ and "SUBSYSTEM" in os.environ
+
+
+class ConfigError(ValueError):
+    """Invalid /etc/napi/mac.conf."""
+
+
+class EepromUnavailable(OSError):
+    """EEPROM sysfs file does not exist (yet)."""
+
+
+class ApplyError(RuntimeError):
+    """Setting the address failed; the message states the interface state."""
+
+
+@dataclass(frozen=True)
+class Rule:
+    """
+    One enabled configuration entry.
+
+    section	section name ("native" for the GMAC)
+    kind	"native", "w5500" or "usb"
+    slot	1-based MAC slot
+    controllers	platform names of host controllers; empty = any
+    bus		SPI bus name (w5500)
+    port	USB port path without bus number (usb)
+    driver	expected kernel driver (usb)
+    """
+    section: str
+    kind: str
+    slot: int
+    controllers: tuple = ()
+    bus: str = ""
+    port: str = ""
+    driver: str = ""
 
 
 def log(priority, msg):
@@ -99,42 +158,121 @@ def log(priority, msg):
         print(f"napi-set-mac: {msg}", file=stream)
 
 
-def load_config():
-    """
-    Read /etc/napi/mac.conf and validate it.
+def _get(cfg, sec, key, required=False, fallback=""):
+    if cfg.has_option(sec, key):
+        v = cfg.get(sec, key).strip()
+        if v:
+            return v
+    if required:
+        raise ConfigError(f"config: [{sec}] missing required key '{key}'")
+    return fallback
 
-    Returns	configparser.ConfigParser
-    Raises	ValueError on duplicate mac_slot among enabled sections
+
+def _getbool(cfg, sec, key, fallback):
+    try:
+        return cfg.getboolean(sec, key, fallback=fallback)
+    except ValueError:
+        raise ConfigError(f"config: [{sec}] {key} = '{cfg.get(sec, key)}' is not a boolean") from None
+
+
+def _getslot(cfg, sec, required, fallback=None):
+    raw = _get(cfg, sec, "mac_slot", required=required)
+    if not raw:
+        return fallback
+    try:
+        slot = int(raw)
+    except ValueError:
+        raise ConfigError(f"config: [{sec}] mac_slot = '{raw}' is not a number") from None
+    if not 1 <= slot <= MAC_SLOTS:
+        raise ConfigError(f"config: [{sec}] mac_slot {slot} out of range 1..{MAC_SLOTS}")
+    return slot
+
+
+def _getlist(cfg, sec, key, required=False):
+    return tuple(_get(cfg, sec, key, required=required).replace(",", " ").split())
+
+
+def load_config(path=None):
     """
+    Read /etc/napi/mac.conf and build the list of enabled rules.
+
+    a_path	config file, default CONFIG_PATH
+    Returns	(enabled, rules, warnings); enabled is the [mac] master switch,
+		warnings are non-fatal findings (unknown sections)
+    Raises	ConfigError on syntax errors, bad values, missing keys,
+		duplicate effective slots or overlapping USB sections
+    """
+    path = path or CONFIG_PATH
     cfg = configparser.ConfigParser()
-    cfg.read(CONFIG_PATH)
+    try:
+        if not cfg.read(path):
+            log(syslog.LOG_WARNING, f"config: {path} not found, no interfaces managed")
+            return False, [], []
+    except configparser.Error as e:
+        raise ConfigError(f"config: {path}: {e}".replace("\n", " ")) from None
 
-    # Every enabled section must own a distinct MAC slot, otherwise two
-    # interfaces would end up with the same address.
+    warnings = [f"config: unknown section [{s}] ignored"
+                for s in cfg.sections() if s not in KNOWN_SECTIONS]
+    enabled = _getbool(cfg, "mac", "enabled", True) if cfg.has_section("mac") else True
+
+    rules = []
+    if cfg.has_section("mac") and _getbool(cfg, "mac", "set_native_eth_mac", False):
+        rules.append(Rule("native", "native", NATIVE_SLOT))
+
+    for sec, default_bus, default_slot in W5500_SECTIONS:
+        if not cfg.has_section(sec) or not _getbool(cfg, sec, "enabled", False):
+            continue
+        rules.append(Rule(sec, "w5500", _getslot(cfg, sec, False, default_slot),
+                          controllers=_getlist(cfg, sec, "controller"),
+                          bus=_get(cfg, sec, "bus", fallback=default_bus)))
+
+    for sec in USB_SECTIONS:
+        if not cfg.has_section(sec) or not _getbool(cfg, sec, "enabled", False):
+            continue
+        rules.append(Rule(sec, "usb", _getslot(cfg, sec, True),
+                          controllers=_getlist(cfg, sec, "controller", required=True),
+                          port=_get(cfg, sec, "port", required=True),
+                          driver=_get(cfg, sec, "driver", fallback="smsc95xx")))
+
+    # Every rule must own a distinct effective slot (defaults and the native
+    # slot included), otherwise two interfaces would get the same address.
     seen = {}
-    for sec in cfg.sections():
-        if sec == "mac" or not cfg.getboolean(sec, "enabled", fallback=False):
-            continue
-        slot = cfg.getint(sec, "mac_slot", fallback=None)
-        if slot is None:
-            continue
-        if slot in seen:
-            raise ValueError(f"config: mac_slot {slot} used by both [{seen[slot]}] and [{sec}]")
-        seen[slot] = sec
-    return cfg
+    for r in rules:
+        if r.slot in seen:
+            raise ConfigError(f"config: MAC slot {r.slot} used by both [{seen[r.slot]}] and [{r.section}]")
+        seen[r.slot] = r.section
+
+    # Two USB sections on the same port of a shared controller would race
+    # for one adapter.
+    usb = [r for r in rules if r.kind == "usb"]
+    for i, a in enumerate(usb):
+        for b in usb[i + 1:]:
+            if a.port == b.port and set(a.controllers) & set(b.controllers):
+                raise ConfigError(f"config: [{a.section}] and [{b.section}] both match port {a.port} "
+                                  f"on {' '.join(sorted(set(a.controllers) & set(b.controllers)))}")
+    return enabled, rules, warnings
 
 
-def read_eeprom():
+def read_eeprom(path=None):
     """
     Read and validate the NAPI EEPROM header.
 
+    a_path	EEPROM file, default EEPROM_PATH
     Returns	bytes, exactly EEPROM_SIZE long
-    Raises	ValueError on short read, bad magic, unsupported version, CRC mismatch
+    Raises	EepromUnavailable if the file does not exist;
+		ValueError on short read, uninitialized chip, bad magic,
+		unsupported version, CRC mismatch, foreign platform, bad mac_count
     """
-    with open(EEPROM_PATH, "rb") as f:
-        b = f.read(EEPROM_SIZE)		# never read the whole chip, I2C is slow
+    path = path or EEPROM_PATH
+    try:
+        with open(path, "rb") as f:
+            b = f.read(EEPROM_SIZE)		# never read the whole chip, I2C is slow
+    except FileNotFoundError:
+        raise EepromUnavailable(f"EEPROM {path} not available") from None
     if len(b) < EEPROM_SIZE:
         raise ValueError(f"EEPROM short read ({len(b)} of {EEPROM_SIZE} bytes)")
+    if b == b"\x00" * EEPROM_SIZE or b == b"\xff" * EEPROM_SIZE:
+        raise ValueError("EEPROM uninitialized (all bytes %02x)" % b[0])
     if b[:len(EEPROM_MAGIC)] != EEPROM_MAGIC:
         raise ValueError("EEPROM magic invalid")
     if b[VER_OFF] != EEPROM_VERSION:
@@ -152,6 +290,11 @@ def read_eeprom():
     return b
 
 
+def _raw_mac(b, slot):
+    off = MAC_BASE_OFF + (slot - 1) * MAC_LEN
+    return b[off:off + MAC_LEN]
+
+
 def get_mac(b, slot):
     """
     Extract one MAC address from the EEPROM image.
@@ -163,14 +306,17 @@ def get_mac(b, slot):
     """
     if not 1 <= slot <= MAC_SLOTS:
         raise ValueError(f"MAC slot {slot} out of range 1..{MAC_SLOTS}")
-    if b[MAC_COUNT_OFF] < slot:
-        raise ValueError(f"MAC slot {slot} not programmed (EEPROM holds {b[MAC_COUNT_OFF]})")
-    off = MAC_BASE_OFF + (slot - 1) * MAC_LEN
-    m = b[off:off + MAC_LEN]
+    count = b[MAC_COUNT_OFF]
+    if count < slot:
+        raise ValueError(f"MAC slot {slot} not programmed (EEPROM holds {count})")
+    m = _raw_mac(b, slot)
     if m in (b"\x00" * MAC_LEN, b"\xff" * MAC_LEN):
         raise ValueError(f"MAC slot {slot} is blank")
     if m[0] & 0x01:
         raise ValueError(f"MAC slot {slot} is a multicast address")
+    dups = [s for s in range(1, count + 1) if s != slot and _raw_mac(b, s) == m]
+    if dups:
+        raise ValueError(f"MAC slot {slot} duplicates slot {dups[0]}")
     return ":".join(f"{x:02x}" for x in m)
 
 
@@ -182,13 +328,12 @@ def device_info(iface):
     Returns	(dev, driver, modalias); dev is None for virtual interfaces
 		(bridge, vlan, tun, ...) that have no backing device
     """
-    dev = pathlib.Path(os.path.realpath(f"/sys/class/net/{iface}/device"))
-    if not dev.exists():
+    link = pathlib.Path(SYS_CLASS_NET, iface, "device")
+    if not link.exists():
         return None, "", ""
-    try:
-        drv = pathlib.Path(os.path.realpath(dev / "driver")).name
-    except OSError:
-        drv = ""
+    dev = pathlib.Path(os.path.realpath(link))
+    drv_link = dev / "driver"
+    drv = pathlib.Path(os.path.realpath(drv_link)).name if drv_link.exists() else ""
     try:
         alias = (dev / "modalias").read_text().strip()
     except OSError:
@@ -196,12 +341,12 @@ def device_info(iface):
     return dev, drv, alias
 
 
-def usb_match(dev, controller, port):
+def usb_match(dev, controllers, port):
     """
-    Check that a USB network interface sits directly on the given root port path.
+    Check that a USB network interface sits directly on the given port path.
 
     a_dev	sysfs path of the USB *interface* (e.g. .../usb1/1-1/1-1.1/1-1.1:1.0)
-    a_controller	platform name of the host controller (e.g. "ff440000.usb")
+    a_controllers	platform names of host controllers (e.g. ("ff440000.usb",))
     a_port	port path without bus number (e.g. "1.1")
     Returns	True on match
 
@@ -209,7 +354,7 @@ def usb_match(dev, controller, port):
     compared, so an adapter plugged into an external hub on that port
     ("1-1.1.3") does not match.
     """
-    if controller not in dev.parts:
+    if not any(c in dev.parts for c in controllers):
         return False
     usbdev = dev.parent.name		# "1-1.1"
     if "-" not in usbdev:
@@ -217,48 +362,44 @@ def usb_match(dev, controller, port):
     return usbdev.split("-", 1)[1] == port
 
 
-def classify(iface, cfg):
+def classify(iface, rules):
     """
-    Decide which MAC slot an interface should get.
+    Decide which rule applies to an interface.
 
     a_iface	interface name
-    a_cfg	loaded configuration
-    Returns	(slot, section_name) or None if the interface is not managed
+    a_rules	rules from load_config()
+    Returns	Rule, or None if the interface is not managed
     """
     dev, drv, alias = device_info(iface)
     if dev is None:
         return None
-    path = str(dev)
 
-    # Native RK3308 GMAC: opt-in via [mac] set_native_eth_mac.
     if drv == "rk_gmac-dwmac" or "rockchip,rk3308-gmac" in alias:
-        if cfg.getboolean("mac", "set_native_eth_mac", fallback=False):
-            return 1, "native"
-        return None
+        return next((r for r in rules if r.kind == "native"), None)
 
-    # W5500 on SPI. Matched by modalias/driver and by SPI bus name; an optional
-    # "controller" key additionally pins the SPI host controller.
+    # W5500 on SPI, matched by modalias/driver and SPI bus name; optional
+    # controllers additionally pin the SPI host controller.
     if alias == "spi:w5500" or drv in ("w5100", "w5100-spi"):
-        for sec, default_bus, default_slot in W5500_SECTIONS:
-            if not cfg.has_section(sec) or not cfg.getboolean(sec, "enabled", fallback=False):
+        for r in rules:
+            if r.kind != "w5500":
                 continue
-            bus = cfg.get(sec, "bus", fallback=default_bus)
-            controller = cfg.get(sec, "controller", fallback="")
-            if controller and controller not in dev.parts:
+            if r.controllers and not any(c in dev.parts for c in r.controllers):
                 continue
-            if f"/{bus}/" in path or f"/{bus}." in path:
-                return cfg.getint(sec, "mac_slot", fallback=default_slot), sec
+            if r.bus in dev.parts or dev.name.startswith(r.bus + "."):
+                return r
         return None
 
-    # Built-in USB Ethernet. Only explicitly configured sections are eligible.
-    for sec in USB_SECTIONS:
-        if not cfg.has_section(sec) or not cfg.getboolean(sec, "enabled", fallback=False):
-            continue
-        if drv != cfg.get(sec, "driver", fallback="smsc95xx"):
-            continue
-        if usb_match(dev, cfg.get(sec, "controller"), cfg.get(sec, "port")):
-            return cfg.getint(sec, "mac_slot"), sec
+    for r in rules:
+        if r.kind == "usb" and drv == r.driver and usb_match(dev, r.controllers, r.port):
+            return r
     return None
+
+
+def _ip_bin():
+    for p in IP_CANDIDATES:
+        if os.access(p, os.X_OK):
+            return p
+    raise RuntimeError("ip(8) not found")
 
 
 def ip(*args):
@@ -267,7 +408,7 @@ def ip(*args):
 
     a_args	arguments after "ip"
     """
-    p = subprocess.run([IP_BIN, *args], text=True, capture_output=True)
+    p = subprocess.run([_ip_bin(), *args], text=True, capture_output=True)
     if p.returncode:
         raise RuntimeError((p.stderr or p.stdout or f"ip exit {p.returncode}").strip())
 
@@ -277,8 +418,12 @@ def is_up(iface):
     a_iface	interface name
     Returns	True if IFF_UP is set
     """
-    flags = int(pathlib.Path(f"/sys/class/net/{iface}/flags").read_text().strip(), 16)
+    flags = int(pathlib.Path(SYS_CLASS_NET, iface, "flags").read_text().strip(), 16)
     return bool(flags & 0x1)
+
+
+def current_mac(iface):
+    return pathlib.Path(SYS_CLASS_NET, iface, "address").read_text().strip().lower()
 
 
 def apply_mac(iface, target):
@@ -288,50 +433,182 @@ def apply_mac(iface, target):
     a_iface	interface name
     a_target	desired MAC, lowercase
     Returns	"ALREADY" if nothing changed, "OK" if the address was set
+    Raises	ApplyError with a message that states the resulting interface state
     """
-    cur = pathlib.Path(f"/sys/class/net/{iface}/address").read_text().strip().lower()
-    if cur == target:
+    if current_mac(iface) == target:
         return "ALREADY"
     was_up = is_up(iface)		# always False in udev "add" context
     if was_up:
-        ip("link", "set", "dev", iface, "down")
+        try:
+            ip("link", "set", "dev", iface, "down")
+        except Exception as e:
+            raise ApplyError(f"link down failed: {e}; MAC unchanged") from None
     try:
         ip("link", "set", "dev", iface, "address", target)
-    except Exception:
+    except Exception as e:
+        msg = f"setting address failed: {e}; MAC unchanged"
         if was_up:
             try:
                 ip("link", "set", "dev", iface, "up")
-            except Exception:
-                pass
-        raise
+            except Exception as e2:
+                msg += f"; interface left DOWN ({e2})"
+        raise ApplyError(msg) from None
     if was_up:
-        ip("link", "set", "dev", iface, "up")
+        try:
+            ip("link", "set", "dev", iface, "up")
+        except Exception as e:
+            raise ApplyError(f"MAC set to {target}, but interface left DOWN: {e}") from None
     return "OK"
 
 
-def main():
-    if len(sys.argv) != 2 or sys.argv[1] == "lo":
+def handle(iface, rules, eeprom):
+    """
+    Assign the configured MAC to one interface.
+
+    a_iface	interface name
+    a_rules	rules from load_config()
+    a_eeprom	callable returning the validated EEPROM image (lets "--all"
+		read the chip once and only if some interface matches)
+    Returns	exit code
+    """
+    rule = classify(iface, rules)
+    if rule is None:
         return EXIT_NOMATCH
-    iface = sys.argv[1]
+    try:
+        target = get_mac(eeprom(), rule.slot)
+    except EepromUnavailable as e:
+        log(syslog.LOG_INFO, f"{iface}: {rule.section}: {e}, deferred until it appears")
+        return EXIT_DEFERRED
+    except Exception as e:
+        log(syslog.LOG_ERR, f"{iface}: {rule.section}: {e}; MAC unchanged")
+        return EXIT_ERROR
+    try:
+        result = apply_mac(iface, target)
+    except Exception as e:
+        log(syslog.LOG_ERR, f"{iface}: {rule.section} MAC{rule.slot} {target}: {e}")
+        return EXIT_ERROR
+    log(syslog.LOG_INFO, f"{iface}: {rule.section} MAC{rule.slot} {target} {result}")
+    return EXIT_OK
+
+
+def cached_eeprom():
+    """
+    Returns	callable that reads the EEPROM on first call and replays the
+		result (bytes or exception) afterwards
+    """
+    box = []
+
+    def get():
+        if not box:
+            try:
+                box.append(("ok", read_eeprom()))
+            except Exception as e:
+                box.append(("err", e))
+        kind, val = box[0]
+        if kind == "err":
+            raise val
+        return val
+    return get
+
+
+def list_ifaces():
+    return sorted(i for i in os.listdir(SYS_CLASS_NET) if i != "lo")
+
+
+def run_all(rules):
+    """
+    Pass over all existing interfaces.
+
+    Returns	exit code: EXIT_ERROR if any interface failed, EXIT_OK otherwise
+    """
+    eeprom = cached_eeprom()
+    counts = {EXIT_OK: 0, EXIT_NOMATCH: 0, EXIT_DEFERRED: 0, EXIT_ERROR: 0}
+    for iface in list_ifaces():
+        try:
+            rc = handle(iface, rules, eeprom)
+        except Exception as e:		# e.g. interface vanished during the pass
+            log(syslog.LOG_ERR, f"{iface}: {e}; MAC unchanged")
+            rc = EXIT_ERROR
+        counts[rc] += 1
+    log(syslog.LOG_WARNING if counts[EXIT_ERROR] or counts[EXIT_DEFERRED] else syslog.LOG_INFO,
+        f"pass complete: set/already={counts[EXIT_OK]} not-managed={counts[EXIT_NOMATCH]} "
+        f"deferred={counts[EXIT_DEFERRED]} errors={counts[EXIT_ERROR]}")
+    return EXIT_ERROR if counts[EXIT_ERROR] else EXIT_OK
+
+
+def run_check(enabled, rules, warnings):
+    """
+    Validate configuration and EEPROM and print what would be done.
+
+    Returns	EXIT_OK, or EXIT_ERROR if any problem was found
+    """
+    ok = True
+    for w in warnings:
+        print(f"WARNING {w}")
+    if not enabled:
+        print("[mac] enabled = false: nothing is managed")
+    try:
+        b = read_eeprom()
+        print(f"EEPROM {EEPROM_PATH}: v{b[VER_OFF]} platform {b[PLATFORM_OFF]} "
+              f"mac_count {b[MAC_COUNT_OFF]} CRC OK")
+    except Exception as e:
+        print(f"ERROR {e}")
+        b, ok = None, False
+
+    present = {}
+    try:
+        for iface in list_ifaces():
+            r = classify(iface, rules)
+            if r is not None:
+                present.setdefault(r.section, []).append(iface)
+    except OSError as e:
+        print(f"WARNING cannot scan {SYS_CLASS_NET}: {e}")
+
+    for r in rules:
+        line = f"[{r.section}] MAC{r.slot}"
+        if b is not None:
+            try:
+                line += f" {get_mac(b, r.slot)}"
+            except ValueError as e:
+                line += f" ERROR {e}"
+                ok = False
+        ifaces = present.get(r.section, [])
+        line += f" -> {', '.join(ifaces)}" if ifaces else " -> (no interface present)"
+        if len(ifaces) > 1:
+            line += " ERROR several interfaces match"
+            ok = False
+        print(line)
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] == "lo":
+        return EXIT_NOMATCH
+    arg = argv[1]
     if IN_UDEV:
         syslog.openlog("napi-set-mac", syslog.LOG_PID, syslog.LOG_DAEMON)
 
     try:
-        cfg = load_config()
-        if not cfg.getboolean("mac", "enabled", fallback=True):
-            return EXIT_NOMATCH
-        hit = classify(iface, cfg)
-        if hit is None:
-            return EXIT_NOMATCH
-        slot, section = hit
-        target = get_mac(read_eeprom(), slot)
-        result = apply_mac(iface, target)
-        log(syslog.LOG_INFO, f"{iface}: {section} MAC{slot} {target} {result}")
-        return EXIT_OK
+        enabled, rules, warnings = load_config()
+    except ConfigError as e:
+        if arg == "--check":
+            print(f"ERROR {e}")
+        else:
+            log(syslog.LOG_ERR, f"{arg}: {e}; MAC unchanged")
+        return EXIT_ERROR
+
+    if arg == "--check":
+        return run_check(enabled, rules, warnings)
+    if not enabled:
+        return EXIT_NOMATCH
+    if arg == "--all":
+        return run_all(rules)
+    try:
+        return handle(arg, rules, read_eeprom)
     except Exception as e:
-        log(syslog.LOG_ERR, f"{iface}: {e}; Linux MAC unchanged")
+        log(syslog.LOG_ERR, f"{arg}: {e}; MAC unchanged")
         return EXIT_ERROR
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv))

@@ -1,19 +1,25 @@
 #!/bin/sh
 #
 #  __MODULE__	install.sh
-#  __IDENT__	V11-000
-#  __REV__	11.0
+#  __IDENT__	V12-000
+#  __REV__	12.0
 #
-#  Abstract:	Install NAPI EEPROM MAC assignment v11 (udev rule + remedial service).
+#  Abstract:	Install NAPI EEPROM MAC assignment v12 (udev rule + remedial service).
 #		An existing /etc/napi/mac.conf is preserved; the new default is put
 #		next to it as mac.conf.dist.
 #
 #  Modification history:
+#	12.0	07-OCT-2026	Check for python3; config check hint.
 #	11.0	24-SEP-2026	Uninstall hint.
 #	10.0	24-SEP-2026	udev rule; existing mac.conf preserved.
 #
 set -eu
 B="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+if [ ! -x /usr/bin/python3 ]; then
+	echo "napi-mac: /usr/bin/python3 is required" >&2
+	exit 1
+fi
 
 install -D -m755 "$B/usr/lib/udev/napi-set-mac"			/usr/lib/udev/napi-set-mac
 install -D -m755 "$B/usr/lib/napi/napi-set-macs"			/usr/lib/napi/napi-set-macs
@@ -35,7 +41,8 @@ udevadm control --reload-rules
 systemctl daemon-reload
 systemctl enable napi-mac.service
 
-echo "NAPI MAC v11 installed."
+echo "NAPI MAC v12 installed."
+echo "Check config/EEPROM:  /usr/lib/udev/napi-set-mac --check"
 echo "Test without reboot:  systemctl restart napi-mac.service; ip -br link"
 echo "Test udev path:       udevadm trigger --subsystem-match=net --action=add; journalctl -t napi-set-mac"
 echo "Uninstall:            ./uninstall.sh [--purge]"
