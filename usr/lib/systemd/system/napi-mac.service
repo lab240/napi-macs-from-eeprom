@@ -1,0 +1,20 @@
+[Unit]
+Description=Set MACs from NAPI EEPROM (remedial pass)
+Documentation=file:/etc/napi/mac.conf
+# Primary mechanism is /etc/udev/rules.d/75-napi-mac.rules; this pass only
+# covers interfaces that existed before the rule was installed or whose
+# udev event failed. No udev-settle: it is deprecated and does not wait for
+# USB devices that the USB core has not discovered yet.
+After=systemd-udevd.service
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/napi/napi-set-macs
+RemainAfterExit=yes
+# Fail-open: a broken EEPROM must not block boot.
+SuccessExitStatus=1
+
+[Install]
+WantedBy=multi-user.target
