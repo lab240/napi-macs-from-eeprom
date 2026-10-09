@@ -1,4 +1,4 @@
-# NAPI EEPROM MAC assignment v13.1 (C)
+# NAPI EEPROM MAC assignment v13.2 (C)
 
 Назначает сетевым интерфейсам платы NAPI (RK3308) постоянные MAC-адреса из
 EEPROM вместо случайных, которые выдают драйверы (`smsc95xx`, `w5100`).
@@ -15,6 +15,8 @@ EEPROM вместо случайных, которые выдают драйве
 | `tests/test_napi_mac.c` | юнит-тесты: контрольный образ EEPROM, поддельный sysfs |
 | `etc/udev/rules.d/75-napi-mac.rules` | udev-правила (интерфейс, EEPROM, USB-драйвер) |
 | `etc/udev/rules.d/99-napi-net-names.rules` | имена `lanusb1..4`, `lanw5500` по контроллеру и порту |
+| `usr/lib/systemd/network/10-napi-mac.link` | `MACAddressPolicy=none` для этих интерфейсов |
+| `packaging/deb/` | Debian-пакет: `control`, скрипты установки, хук initramfs |
 | `usr/lib/systemd/system/napi-mac.service` | страховочный проход при загрузке |
 | `etc/napi/mac.conf` | конфиг по умолчанию |
 | `yocto/napi-mac_git.bb` | рецепт Yocto |
@@ -33,6 +35,40 @@ make install DESTDIR=... UDEVDIR=... SYSTEMDUNITDIR=... SYSCONFDIR=...
 
 `make install` подставляет `UDEVDIR` в путь к программе в правиле udev и в
 сервисе.
+
+## Debian/Armbian: пакет
+
+```sh
+make deb                                  # на arm64-хосте
+make deb CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip   # с x86
+```
+
+Пакет `napi-mac` (arm64) публикуется в репозитории NapiLab скриптом
+`build-napi-mac.sh` из [repo-napilab](https://github.com/lab240/repo-napilab).
+На плате:
+
+```sh
+curl -fsSL https://repo.napilab.ru/napilab.gpg | gpg --dearmor > /usr/share/keyrings/napilab.gpg
+echo "deb [arch=arm64 signed-by=/usr/share/keyrings/napilab.gpg] https://repo.napilab.ru stable main" > /etc/apt/sources.list.d/napilab.list
+apt update && apt install napi-mac
+```
+
+Что делает пакет сверх файлов в `/usr/lib`:
+
+* `mac.conf` кладётся в `/usr/share/napi-mac/` и копируется в `/etc/napi/`,
+  только если там его нет (конфиг ручной установки сохраняется без вопросов
+  dpkg); `purge` удаляет `/etc/napi`;
+* `99-napi-net-names.rules` из BSP-пакета Armbian (в `/etc` он перекрывал бы
+  наш) откладывается в `/etc/napi/99-napi-net-names.rules.orig` и
+  возвращается при `remove`; следы ручной установки (`install.sh`) удаляются;
+* хук initramfs-tools кладёт правило имён в initramfs (`.link` хук udev
+  копирует сам); `update-initramfs` выполняется через триггер;
+* сервис включается и сразу запускается.
+
+Нужен оверлей `i2c1-at24` (`overlays=` в `/boot/armbianEnv.txt`). Без него
+интерфейсы ждут EEPROM, лог говорит «no I2C device 1-0050 (EEPROM not in the
+device tree, overlay i2c1-at24 not enabled?)», а MAC остаются случайными, но
+разными (`10-napi-mac.link`).
 
 ## Yocto
 
@@ -67,6 +103,22 @@ initramfs (интерфейсы переименовываются ещё там
 где её нет, ничего не запускалось.
 
 ## История
+
+v13.2 относительно v13.1:
+
+* `make deb` и `packaging/deb/`: пакет `napi-mac` для Debian/Armbian
+  (статический бинарник, скрипты установки, хук initramfs);
+* `10-napi-mac.link`: `MACAddressPolicy=none` для встроенных интерфейсов. На
+  свежем Armbian без оверлея `i2c1-at24` политика `persistent` строила MAC из
+  предсказуемого имени, одинакового для портов 1.1 (и 1.2) обоих
+  контроллеров, и две пары интерфейсов получали одинаковые MAC;
+* сообщение об отсутствии EEPROM различает «нет устройства в дереве
+  устройств (оверлей не включён)» и «драйвер at24 ещё не подключился».
+
+Проверено на свежем Armbian 26.11 (trunk): установка из репозитория NapiLab
+без оверлея (интерфейсы ждут EEPROM, MAC разные), обновление пакета,
+включение оверлея (at24 появляется после адаптеров, MAC выставлены),
+`apt remove` (правило BSP вернулось), повторная установка, `apt purge`.
 
 v13.1 относительно v13:
 
