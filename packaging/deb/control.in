@@ -1,0 +1,15 @@
+Package: napi-mac
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: @ARCH@
+Installed-Size: @SIZE@
+Maintainer: NapiLab <info@napilab.ru>
+Homepage: https://github.com/lab240/napi-macs-from-eeprom
+Description: MAC addresses from the NAPI board EEPROM
+ Assigns the MAC addresses stored in the on-board NAPI EEPROM (layout v3)
+ to the W5500 and USB Ethernet interfaces of NAPI RK3308 boards, from udev
+ rules and a one-shot service at boot, and names the interfaces
+ lanusb1..4 / lanw5500 by host controller and port.
+ .
+ Configuration: /etc/napi/mac.conf. Check: napi-set-mac --check.

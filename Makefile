@@ -3,6 +3,9 @@
 #   make                         build build/napi-set-mac with $(CC)
 #   make test                    build and run unit tests with $(HOSTCC)
 #   make install DESTDIR=...     install binary, udev rule, systemd unit, config
+#   make deb                     Debian package build/napi-mac_<ver>_<arch>.deb
+#                                (static binary; for arm64 from an x86 host:
+#                                 make deb CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip)
 #
 # Cross build for a board without a matching sysroot (static, any glibc):
 #   make CC=aarch64-linux-gnu-gcc LDFLAGS=-static
@@ -23,6 +26,13 @@ UDEVDIR		?= /usr/lib/udev
 UDEVRULESDIR	?= $(UDEVDIR)/rules.d
 SYSTEMDUNITDIR	?= /usr/lib/systemd/system
 SYSCONFDIR	?= /etc
+
+# Debian package (see packaging/deb/)
+DEB_ARCH	?= arm64
+DEB_VERSION	?= $(VERSION)
+STRIP		?= strip
+DEBROOT		:= build/debroot
+DEB		:= build/napi-mac_$(DEB_VERSION)_$(DEB_ARCH).deb
 
 SRCS		:= src/config.c src/eeprom.c src/classify.c src/netif.c src/napi_mac.c
 HDRS		:= src/napi_mac.h
@@ -57,7 +67,29 @@ install: build/napi-set-mac
 	install -m 644 etc/udev/rules.d/99-napi-net-names.rules $(DESTDIR)$(UDEVRULESDIR)/99-napi-net-names.rules
 	install -D -m 644 etc/napi/mac.conf $(DESTDIR)$(SYSCONFDIR)/napi/mac.conf
 
+# Static, so that the package does not depend on the libc of the build host.
+build/napi-set-mac.static: $(SRCS) src/main.c $(HDRS) | build
+	$(CC) $(WARN) $(CPPFLAGS) $(CFLAGS) -o $@ $(SRCS) src/main.c $(LDFLAGS) -static
+	$(STRIP) $@
+
+deb: build/napi-set-mac.static
+	rm -rf $(DEBROOT) $(DEB)
+	install -D -m 755 build/napi-set-mac.static $(DEBROOT)/usr/lib/udev/napi-set-mac
+	install -D -m 644 etc/udev/rules.d/75-napi-mac.rules $(DEBROOT)/usr/lib/udev/rules.d/75-napi-mac.rules
+	install -D -m 644 etc/udev/rules.d/99-napi-net-names.rules $(DEBROOT)/usr/lib/udev/rules.d/99-napi-net-names.rules
+	install -D -m 644 usr/lib/systemd/system/napi-mac.service $(DEBROOT)/usr/lib/systemd/system/napi-mac.service
+	install -D -m 644 etc/napi/mac.conf $(DEBROOT)/usr/share/napi-mac/mac.conf
+	install -D -m 755 packaging/deb/initramfs-hook $(DEBROOT)/usr/share/initramfs-tools/hooks/napi-mac
+	install -D -m 644 README.md $(DEBROOT)/usr/share/doc/napi-mac/README.md
+	install -D -m 644 NAPI_EEPROM_SPEC.md $(DEBROOT)/usr/share/doc/napi-mac/NAPI_EEPROM_SPEC.md
+	install -d $(DEBROOT)/DEBIAN
+	for f in preinst postinst prerm postrm; do install -m 755 packaging/deb/$$f $(DEBROOT)/DEBIAN/$$f; done
+	sed -e 's|@VERSION@|$(DEB_VERSION)|' -e 's|@ARCH@|$(DEB_ARCH)|' \
+	    -e "s|@SIZE@|$$(du -sk --exclude=DEBIAN $(DEBROOT) | cut -f1)|" \
+	    packaging/deb/control.in > $(DEBROOT)/DEBIAN/control
+	dpkg-deb --root-owner-group --build $(DEBROOT) $(DEB)
+
 clean:
 	rm -rf build
 
-.PHONY: all test install clean
+.PHONY: all test install deb clean

@@ -1,0 +1,31 @@
+#!/bin/sh
+#
+# napi-mac postinst: default config, service, udev and initramfs refresh.
+#
+set -e
+
+case "$1" in
+configure)
+	# Not a dpkg conffile: a mac.conf from a manual install must be kept
+	# without a conffile prompt.
+	mkdir -p /etc/napi
+	if [ ! -e /etc/napi/mac.conf ]; then
+		cp /usr/share/napi-mac/mac.conf /etc/napi/mac.conf
+	fi
+
+	systemctl enable napi-mac.service >/dev/null 2>&1 || true
+	if [ -d /run/systemd/system ]; then
+		udevadm control --reload-rules || true
+		systemctl daemon-reload || true
+		# Apply MACs now (oneshot pass; on upgrade runs the new version).
+		systemctl restart napi-mac.service || true
+	fi
+
+	# The naming rule is copied into the initramfs by our hook.
+	if command -v update-initramfs >/dev/null 2>&1; then
+		update-initramfs -u || true
+	fi
+	;;
+esac
+
+exit 0

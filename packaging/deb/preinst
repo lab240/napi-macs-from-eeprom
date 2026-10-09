@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# napi-mac preinst: clear files that would override the packaged ones.
+#
+set -e
+
+case "$1" in
+install|upgrade)
+	mkdir -p /etc/napi
+
+	# A rule of the same name in /etc takes precedence over ours in
+	# /usr/lib/udev/rules.d. The one left by install.sh is ours and goes;
+	# a foreign one (Armbian image) is kept for postrm to restore.
+	l_names=/etc/udev/rules.d/99-napi-net-names.rules
+	if [ -e "$l_names" ]; then
+		if grep -q "napi-macs-from-eeprom" "$l_names"; then
+			rm -f "$l_names"
+		elif [ ! -e /etc/napi/99-napi-net-names.rules.orig ]; then
+			mv "$l_names" /etc/napi/99-napi-net-names.rules.orig
+		else
+			mv "$l_names" "/etc/napi/99-napi-net-names.rules.orig.$(date +%Y%m%d%H%M%S)"
+		fi
+	fi
+
+	# Leftovers of a manual install (install.sh, v10..v13).
+	l_rule=/etc/udev/rules.d/75-napi-mac.rules
+	if [ -e "$l_rule" ] && grep -q "napi-set-mac" "$l_rule"; then
+		rm -f "$l_rule"
+	fi
+	rm -f /etc/udev/rules.d/05-napi-mac.rules
+	rm -f /usr/lib/napi/napi-set-macs
+	rmdir /usr/lib/napi 2>/dev/null || true
+	;;
+esac
+
+exit 0

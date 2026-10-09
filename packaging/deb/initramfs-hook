@@ -1,0 +1,23 @@
+#!/bin/sh
+#
+# initramfs-tools hook of napi-mac: put the interface naming rule into the
+# initramfs. The udev hook copies only a fixed list of rules from
+# /usr/lib/udev/rules.d, and the interfaces are already renamed in the
+# initramfs, so without this the names would be chosen there by other rules.
+
+PREREQ="udev"
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+l_rule=/usr/lib/udev/rules.d/99-napi-net-names.rules
+if [ -e "$l_rule" ]; then
+	mkdir -p "$DESTDIR/usr/lib/udev/rules.d"
+	cp -p "$l_rule" "$DESTDIR/usr/lib/udev/rules.d/"
+fi

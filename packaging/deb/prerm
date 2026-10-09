@@ -1,0 +1,13 @@
+#!/bin/sh
+#
+# napi-mac prerm: disable the service on removal (not on upgrade).
+#
+set -e
+
+case "$1" in
+remove)
+	systemctl disable napi-mac.service >/dev/null 2>&1 || true
+	;;
+esac
+
+exit 0

@@ -1,0 +1,31 @@
+#!/bin/sh
+#
+# napi-mac postrm: restore the naming rule saved by preinst, refresh udev and
+# the initramfs; purge removes the configuration.
+#
+set -e
+
+case "$1" in
+remove|purge)
+	l_names=/etc/udev/rules.d/99-napi-net-names.rules
+	if [ -e /etc/napi/99-napi-net-names.rules.orig ] && [ ! -e "$l_names" ]; then
+		mv /etc/napi/99-napi-net-names.rules.orig "$l_names"
+	fi
+	if [ -d /run/systemd/system ]; then
+		udevadm control --reload-rules || true
+		systemctl daemon-reload || true
+	fi
+	if command -v update-initramfs >/dev/null 2>&1; then
+		update-initramfs -u || true
+	fi
+	;;
+esac
+
+case "$1" in
+purge)
+	rm -f /etc/napi/mac.conf /etc/napi/mac.conf.dist
+	rmdir /etc/napi 2>/dev/null || true
+	;;
+esac
+
+exit 0
