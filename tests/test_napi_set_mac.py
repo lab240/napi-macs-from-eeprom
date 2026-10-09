@@ -379,6 +379,30 @@ class TestApply(TmpDir):
         self.assertEqual(self.mac("eth1"), "02:9e:e6:97:4d:63")
         self.assertEqual(self.mac("eth3"), "aa:bb:cc:dd:ee:01")
 
+    def test_main_ifindex_resolves_current_name(self):
+        # udev passes the index; the name may have changed since the event.
+        m.ip = FakeIp()
+        self.iface("lanusb1", f"{USB_EHCI}/1-1.1/1-1.1:1.0", "smsc95xx")
+        saved = m.socket.if_indextoname
+        names = {7: "lanusb1"}
+
+        def fake(idx):
+            if idx not in names:
+                raise OSError("no such device")
+            return names[idx]
+        m.socket.if_indextoname = fake
+        try:
+            self.assertEqual(m.main(["napi-set-mac", "--ifindex", "7"]), m.EXIT_OK)
+            self.assertEqual(self.mac("lanusb1"), "02:9e:e6:97:4d:63")
+            self.assertEqual(m.main(["napi-set-mac", "--ifindex", "8"]), m.EXIT_NOMATCH)
+            self.assertEqual(m.main(["napi-set-mac", "--ifindex", "x"]), m.EXIT_ERROR)
+        finally:
+            m.socket.if_indextoname = saved
+
+    def test_main_usage(self):
+        self.assertEqual(m.main(["napi-set-mac"]), m.EXIT_ERROR)
+        self.assertEqual(m.main(["napi-set-mac", "lo"]), m.EXIT_NOMATCH)
+
     def test_main_config_error(self):
         self.config("[w5500_spi1]\nenabled = true\nmac_slot = 0\n")
         self.assertEqual(m.main(["napi-set-mac", "eth1"]), m.EXIT_ERROR)

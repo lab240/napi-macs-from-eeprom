@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 #
 #  __MODULE__	napi-set-mac
-#  __IDENT__	V12-000
-#  __REV__	12.0
+#  __IDENT__	V12-001
+#  __REV__	12.1
 #
 #  Facility:	NAPI EEPROM MAC assignment
 #
@@ -12,6 +12,7 @@
 #		and by the remedial one-shot service napi-mac.service.
 #
 #  Usage:	napi-set-mac <ifname>	handle one interface
+#		napi-set-mac --ifindex <n>	handle one interface by index (udev)
 #		napi-set-mac --all	pass over all existing interfaces
 #		napi-set-mac --check	validate config and EEPROM, show the plan;
 #					changes nothing
@@ -21,6 +22,8 @@
 #		3  interface not matched by configuration (nothing to do)
 #		4  interface matched, but the EEPROM is not available yet; it is
 #		   handled by the "--all" pass started when the EEPROM appears
+#		Under udev, 3 and 4 are reported as 0, so that udev does not log
+#		"failed" for every interface that is simply not managed.
 #
 #  EEPROM v3 layout, per NAPI_EEPROM_SPEC.md (2026-09-24), little-endian.
 #  Only the fields this consumer uses are listed:
@@ -37,6 +40,13 @@
 #  Configuration:	/etc/napi/mac.conf, see comments there.
 #
 #  Modification history:
+#	12.1	09-OCT-2026	udev passes IFINDEX ("--ifindex"), the name is resolved
+#				at run time. $name/$env{INTERFACE} are substituted
+#				before NAME= in later rules (99-napi-net-names.rules)
+#				applies, so on USB re-enumeration the helper got the
+#				stale kernel name (eth0), matched nothing and left the
+#				random MAC. Found on a NAPI-C board; v11 had the same bug.
+#				Exit codes 3/4 mapped to 0 under udev.
 #	12.0	07-OCT-2026	"--all" and "--check" modes; the "--all" pass runs
 #				in-process and is also started by udev when the
 #				EEPROM is bound, so interfaces that appeared before
@@ -70,6 +80,7 @@ import binascii
 import configparser
 import os
 import pathlib
+import socket
 import struct
 import subprocess
 import sys
@@ -581,12 +592,48 @@ def run_check(enabled, rules, warnings):
     return EXIT_OK if ok else EXIT_ERROR
 
 
+def resolve_ifindex(raw):
+    """
+    Map an interface index to its current name.
+
+    a_raw	IFINDEX as passed by udev
+    Returns	interface name, or None if the interface no longer exists
+    Raises	ValueError if raw is not a positive number
+
+    udev substitutes $name / $env{INTERFACE} in RUN when the rule is parsed,
+    i.e. before NAME= assignments in later rules take effect, so a name
+    passed on the command line can already be stale (eth0 renamed to
+    lanusb1). The index survives renames.
+    """
+    idx = int(raw)
+    if idx <= 0:
+        raise ValueError(f"bad ifindex {raw}")
+    try:
+        return socket.if_indextoname(idx)
+    except OSError:
+        return None
+
+
 def main(argv):
-    if len(argv) != 2 or argv[1] == "lo":
-        return EXIT_NOMATCH
-    arg = argv[1]
+    args = argv[1:]
     if IN_UDEV:
         syslog.openlog("napi-set-mac", syslog.LOG_PID, syslog.LOG_DAEMON)
+    if len(args) == 2 and args[0] == "--ifindex":
+        try:
+            arg = resolve_ifindex(args[1])
+        except ValueError as e:
+            log(syslog.LOG_ERR, f"{e}; MAC unchanged")
+            return EXIT_ERROR
+        if arg is None:
+            log(syslog.LOG_WARNING, f"ifindex {args[1]}: interface gone, nothing to do")
+            return EXIT_NOMATCH
+    elif len(args) == 1:
+        arg = args[0]
+    else:
+        print("usage: napi-set-mac <ifname> | --ifindex <n> | --all | --check", file=sys.stderr)
+        return EXIT_ERROR
+    if arg == "lo":
+        return EXIT_NOMATCH
 
     try:
         enabled, rules, warnings = load_config()
@@ -611,4 +658,8 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    rc = main(sys.argv)
+    # udev logs every non-zero RUN exit as "failed"; only real errors should be.
+    if IN_UDEV and rc != EXIT_ERROR:
+        rc = EXIT_OK
+    sys.exit(rc)

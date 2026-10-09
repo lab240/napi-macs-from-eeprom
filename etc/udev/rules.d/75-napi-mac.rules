@@ -3,9 +3,11 @@
 # 1. Every "add" of a physical network interface: initial boot enumeration,
 #    USB hotplug and USB re-enumeration after a bus reset (smsc95xx generates a
 #    new random MAC on every probe, so the address must be re-applied each time).
-#    Interface renaming (NAME= from 80-net-setup-link.rules / .link files) is
-#    applied after all rules but before RUN programs execute, and $name is
-#    substituted at that point, so the helper gets the final interface name.
+#    The helper gets IFINDEX, not the name: $name and $env{INTERFACE} are
+#    substituted when this line is parsed, before NAME= from later rules
+#    (e.g. 99-*-net-names.rules, 80-net-setup-link.rules) is applied, so on
+#    hotplug the helper would get the stale kernel name ("eth0"). The index
+#    survives renaming; the helper resolves the final name when it runs.
 #    RUN programs complete before the event is published to
 #    NetworkManager/networkd, so they see the interface with the correct MAC.
 #
@@ -16,7 +18,7 @@
 
 ACTION=="add", SUBSYSTEM=="net", KERNEL!="lo", \
 	ENV{DEVTYPE}!="bridge", ENV{DEVTYPE}!="vlan", ENV{DEVTYPE}!="bond", ENV{DEVTYPE}!="wlan", \
-	RUN+="/usr/lib/udev/napi-set-mac $name"
+	RUN+="/usr/lib/udev/napi-set-mac --ifindex $env{IFINDEX}"
 
 ACTION=="bind", SUBSYSTEM=="i2c", KERNEL=="1-0050", DRIVER=="at24", \
 	RUN+="/usr/lib/udev/napi-set-mac --all"
