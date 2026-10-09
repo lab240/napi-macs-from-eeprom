@@ -1,9 +1,37 @@
-# NAPI EEPROM MAC assignment v12
+# NAPI EEPROM MAC assignment v12.3
 
 Назначает сетевым интерфейсам платы NAPI (RK3308) постоянные MAC-адреса из
 EEPROM вместо случайных, которые выдают драйверы (`smsc95xx`, `w5100`).
 
+## Имена интерфейсов
+
+`99-napi-net-names.rules` даёт постоянные имена по `ID_PATH` (контроллер +
+порт), без номера USB-шины:
+
+| Имя | Контроллер, порт | Секция `mac.conf` |
+| --- | --- | --- |
+| `lanusb1` | `ff400000.usb` (DWC2 OTG), 1.1 | `usb_eth_3` |
+| `lanusb2` | `ff400000.usb` (DWC2 OTG), 1.2 | `usb_eth_4` |
+| `lanusb3` | `ff440000.usb` (EHCI), 1.1 | `usb_eth_1` |
+| `lanusb4` | `ff440000.usb` (EHCI), 1.2 | `usb_eth_2` |
+| `lanw5500` | `ff140000.spi`, CS0 (SPI2) | `w5500_spi2` |
+
+Назначение MAC от имён не зависит. Файл заменяет одноимённое правило Armbian:
+`install.sh` сохраняет его в `/etc/napi/99-napi-net-names.rules.orig`,
+`uninstall.sh` возвращает. Оба скрипта вызывают `update-initramfs -u`, потому
+что Debian/Armbian копируют `/etc/udev/rules.d` в initramfs.
+
 ## История
+
+v12.3 относительно v12.2 (то же, что v13.1 в ветке `c-port`):
+
+* `99-napi-net-names.rules`: имена по `ID_PATH` вместо номера шины
+  (`KERNELS=="2-1.1:1.0"` в правиле Armbian); номер шины EHCI зависит от
+  порядка инициализации контроллеров, при шине 3 адаптеры оставались
+  `eth2`/`eth3`;
+* `install.sh`/`uninstall.sh`: сохранение и возврат правила Armbian,
+  `update-initramfs -u`; в `75-napi-mac.rules` — `TEST==`, чтобы в initramfs,
+  где программы нет, правила ничего не запускали.
 
 v12.2 относительно v12.1 (проверка на плате NAPI-C с Napi Linux 0.3.2, Yocto):
 
