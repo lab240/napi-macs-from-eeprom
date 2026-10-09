@@ -1,0 +1,25 @@
+# 10-napi-mac.link - napi-macs-from-eeprom
+#
+# Built-in network interfaces of the NAPI RK3308 board (USB Ethernet on both
+# host controllers, W5500 on SPI2), matched by ID_PATH like
+# 99-napi-net-names.rules.
+#
+# MACAddressPolicy=none keeps the driver's address until napi-set-mac sets
+# the one from the EEPROM. The default policy (persistent, 99-default.link)
+# derives the MAC from the predictable "path" name, which is the same for
+# the adapters on port 1.1 (and on 1.2) of the two controllers (enu1u1), so
+# without the EEPROM (overlay i2c1-at24 not enabled) two interfaces got the
+# same MAC.
+#
+# No NamePolicy: the names come from 99-napi-net-names.rules. Matching this
+# file instead of 99-default.link also stops systemd from trying to give two
+# adapters the same name ("Failed to rename ... File exists").
+#
+# On Debian/Armbian the initramfs udev hook copies .link files into the
+# initramfs; run "update-initramfs -u" after changing this file.
+
+[Match]
+Path=platform-ff400000.usb-usb-0:1.1:1.0 platform-ff400000.usb-usb-0:1.2:1.0 platform-ff440000.usb-usb-0:1.1:1.0 platform-ff440000.usb-usb-0:1.2:1.0 platform-ff140000.spi-cs-0
+
+[Link]
+MACAddressPolicy=none

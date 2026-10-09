@@ -13,7 +13,7 @@
 # Yocto passes CC/CFLAGS/LDFLAGS and the directory variables below
 # (see yocto/napi-mac_git.bb).
 
-VERSION		?= 13.1
+VERSION		?= 13.2
 
 CC		?= cc
 HOSTCC		?= cc
@@ -25,6 +25,7 @@ CPPFLAGS	+= -DNAPI_VERSION=\"$(VERSION)\"
 UDEVDIR		?= /usr/lib/udev
 UDEVRULESDIR	?= $(UDEVDIR)/rules.d
 SYSTEMDUNITDIR	?= /usr/lib/systemd/system
+SYSTEMDNETWORKDIR ?= /usr/lib/systemd/network
 SYSCONFDIR	?= /etc
 
 # Debian package (see packaging/deb/)
@@ -65,6 +66,7 @@ install: build/napi-set-mac
 	$(FIXPATH) usr/lib/systemd/system/napi-mac.service > $(DESTDIR)$(SYSTEMDUNITDIR)/napi-mac.service
 	chmod 644 $(DESTDIR)$(UDEVRULESDIR)/75-napi-mac.rules $(DESTDIR)$(SYSTEMDUNITDIR)/napi-mac.service
 	install -m 644 etc/udev/rules.d/99-napi-net-names.rules $(DESTDIR)$(UDEVRULESDIR)/99-napi-net-names.rules
+	install -D -m 644 usr/lib/systemd/network/10-napi-mac.link $(DESTDIR)$(SYSTEMDNETWORKDIR)/10-napi-mac.link
 	install -D -m 644 etc/napi/mac.conf $(DESTDIR)$(SYSCONFDIR)/napi/mac.conf
 
 # Static, so that the package does not depend on the libc of the build host.
@@ -78,6 +80,7 @@ deb: build/napi-set-mac.static
 	install -D -m 644 etc/udev/rules.d/75-napi-mac.rules $(DEBROOT)/usr/lib/udev/rules.d/75-napi-mac.rules
 	install -D -m 644 etc/udev/rules.d/99-napi-net-names.rules $(DEBROOT)/usr/lib/udev/rules.d/99-napi-net-names.rules
 	install -D -m 644 usr/lib/systemd/system/napi-mac.service $(DEBROOT)/usr/lib/systemd/system/napi-mac.service
+	install -D -m 644 usr/lib/systemd/network/10-napi-mac.link $(DEBROOT)/usr/lib/systemd/network/10-napi-mac.link
 	install -D -m 644 etc/napi/mac.conf $(DEBROOT)/usr/share/napi-mac/mac.conf
 	install -D -m 755 packaging/deb/initramfs-hook $(DEBROOT)/usr/share/initramfs-tools/hooks/napi-mac
 	install -D -m 644 README.md $(DEBROOT)/usr/share/doc/napi-mac/README.md

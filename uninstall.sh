@@ -1,8 +1,8 @@
 #!/bin/sh
 #
 #  __MODULE__	uninstall.sh
-#  __IDENT__	V13-001
-#  __REV__	13.1
+#  __IDENT__	V13-002
+#  __REV__	13.2
 #
 #  Abstract:	Remove NAPI EEPROM MAC assignment v13 (udev rule, binary,
 #		remedial service) and leftovers of earlier versions.
@@ -13,6 +13,7 @@
 #  Usage:	./uninstall.sh [--purge]
 #
 #  Modification history:
+#	13.2	09-OCT-2026	Remove 10-napi-mac.link.
 #	13.1	09-OCT-2026	Remove 99-napi-net-names.rules, restore the one saved
 #				by install.sh; update-initramfs -u where available.
 #	13.0	09-OCT-2026	Version bump; v12 wrapper still removed as a leftover.
@@ -35,6 +36,7 @@ rm -f /etc/udev/rules.d/75-napi-mac.rules
 rm -f /usr/lib/udev/napi-set-mac
 rm -f /usr/lib/napi/napi-set-macs
 rm -f /usr/lib/systemd/system/napi-mac.service
+rm -f /usr/lib/systemd/network/10-napi-mac.link
 rmdir /usr/lib/napi 2>/dev/null || true
 
 # Interface names: ours goes, a previously installed one comes back.

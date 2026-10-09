@@ -15,7 +15,7 @@ SRC_URI = "git://github.com/lab240/napi-macs-from-eeprom.git;protocol=https;bran
 # Development: follow the branch. For a release, pin a commit instead:
 #   SRCREV = "<commit>"
 SRCREV = "${AUTOREV}"
-PV = "13.1+git"
+PV = "13.2+git"
 
 S = "${WORKDIR}/git"
 
@@ -27,6 +27,7 @@ EXTRA_OEMAKE = " \
     'LDFLAGS=${LDFLAGS}' \
     'UDEVDIR=${nonarch_base_libdir}/udev' \
     'SYSTEMDUNITDIR=${systemd_system_unitdir}' \
+    'SYSTEMDNETWORKDIR=${systemd_unitdir}/network' \
     'SYSCONFDIR=${sysconfdir}' \
 "
 
@@ -45,6 +46,7 @@ FILES:${PN} += " \
     ${nonarch_base_libdir}/udev/napi-set-mac \
     ${nonarch_base_libdir}/udev/rules.d/75-napi-mac.rules \
     ${nonarch_base_libdir}/udev/rules.d/99-napi-net-names.rules \
+    ${systemd_unitdir}/network/10-napi-mac.link \
 "
 CONFFILES:${PN} = "${sysconfdir}/napi/mac.conf"
 

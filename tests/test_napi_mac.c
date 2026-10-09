@@ -284,8 +284,14 @@ static void test_eeprom_missing(void)
 	char err[MSG_MAX];
 
 	setup("eeprom_missing");
+	/* I2C device directory present, file missing: driver not bound yet. */
 	CHECK_EQ(eeprom_read(g_eeprom, b, err, sizeof err), EE_UNAVAILABLE);
-	CHECK_HAS(err, "not available");
+	CHECK_HAS(err, "not available: at24 driver not bound yet");
+	/* No I2C device at all: not in the device tree. */
+	char path[PATH_MAX + 16];
+	snprintf(path, sizeof path, "%s/1-0050/eeprom", g_root);
+	CHECK_EQ(eeprom_read(path, b, err, sizeof err), EE_UNAVAILABLE);
+	CHECK_HAS(err, "no I2C device 1-0050 (EEPROM not in the device tree, overlay i2c1-at24 not enabled?)");
 	teardown();
 }
 

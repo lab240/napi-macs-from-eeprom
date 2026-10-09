@@ -1,8 +1,8 @@
 #!/bin/sh
 #
 #  __MODULE__	install.sh
-#  __IDENT__	V13-001
-#  __REV__	13.1
+#  __IDENT__	V13-002
+#  __REV__	13.2
 #
 #  Abstract:	Install NAPI EEPROM MAC assignment v13 (udev rule + remedial service)
 #		on a running system. The binary must be built first ("make", for a
@@ -12,6 +12,8 @@
 #		next to it as mac.conf.dist. Yocto images use the recipe instead.
 #
 #  Modification history:
+#	13.2	09-OCT-2026	10-napi-mac.link (MACAddressPolicy=none for the
+#				built-in interfaces).
 #	13.1	09-OCT-2026	99-napi-net-names.rules (names by controller and
 #				port); a foreign rule of that name is kept as
 #				/etc/napi/99-napi-net-names.rules.orig;
@@ -38,6 +40,7 @@ fi
 
 install -D -m755 "$l_bin"						/usr/lib/udev/napi-set-mac
 install -D -m644 "$B/usr/lib/systemd/system/napi-mac.service"	/usr/lib/systemd/system/napi-mac.service
+install -D -m644 "$B/usr/lib/systemd/network/10-napi-mac.link"	/usr/lib/systemd/network/10-napi-mac.link
 install -D -m644 "$B/etc/udev/rules.d/75-napi-mac.rules"		/etc/udev/rules.d/75-napi-mac.rules
 
 # Interface names. Keep a rule of the same name that is not ours (Armbian

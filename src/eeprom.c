@@ -15,8 +15,10 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "napi_mac.h"
@@ -37,6 +39,12 @@ uint32_t crc32_iso_hdlc(const uint8_t *p, size_t n)
 			crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
 	}
 	return crc ^ 0xFFFFFFFFu;
+}
+
+static const char *base_dir(const char *p)
+{
+	const char *s = strrchr(p, '/');
+	return s ? s + 1 : p;
 }
 
 static int all_bytes(const uint8_t *b, size_t n, uint8_t v)
@@ -105,7 +113,22 @@ int eeprom_read(const char *path, uint8_t b[EEPROM_SIZE], char *err, size_t errl
 	int fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (fd < 0) {
 		if (errno == ENOENT) {
-			snprintf(err, errlen, "EEPROM %s not available", path);
+			/*
+			 * Tell "not in the device tree" (never appears by
+			 * itself) from "driver not bound yet" (at24 module).
+			 */
+			char dir[PATH_MAX];
+			struct stat st;
+			snprintf(dir, sizeof dir, "%s", path);
+			char *slash = strrchr(dir, '/');
+			if (slash)
+				*slash = '\0';
+			if (slash && stat(dir, &st) < 0)
+				snprintf(err, errlen, "EEPROM %s not available: no I2C device %s "
+					 "(EEPROM not in the device tree, overlay i2c1-at24 not enabled?)",
+					 path, base_dir(dir));
+			else
+				snprintf(err, errlen, "EEPROM %s not available: at24 driver not bound yet", path);
 			return EE_UNAVAILABLE;
 		}
 		snprintf(err, errlen, "EEPROM %s: %s", path, strerror(errno));
