@@ -14,11 +14,23 @@
 # 2. The EEPROM driver (at24) binding to 1-0050. If the EEPROM appears after
 #    the network interfaces (at24 as a late module), their "add" events found
 #    no EEPROM and were deferred (exit code 4); this pass handles them.
-#    The bus/address must match EEPROM_PATH in /usr/lib/udev/napi-set-mac.
+#    The bus/address must match the EEPROM path in napi-set-mac.
+#
+# 3. The USB Ethernet driver binding to its USB interface. udev drops the
+#    whole "add" event of a network interface whose rename fails (two USB
+#    adapters on different controllers getting the same predictable name,
+#    "Failed to rename ... File exists"), so rule 1 never runs for it; if the
+#    adapter appears after the at24 pass and the boot service, nothing else
+#    would set its MAC. The "bind" event comes after the driver has registered
+#    the network interface and does not depend on its name. Add other drivers
+#    here if mac.conf uses them ("driver" key).
 
 ACTION=="add", SUBSYSTEM=="net", KERNEL!="lo", \
 	ENV{DEVTYPE}!="bridge", ENV{DEVTYPE}!="vlan", ENV{DEVTYPE}!="bond", ENV{DEVTYPE}!="wlan", \
 	RUN+="/usr/lib/udev/napi-set-mac --ifindex $env{IFINDEX}"
 
 ACTION=="bind", SUBSYSTEM=="i2c", KERNEL=="1-0050", DRIVER=="at24", \
+	RUN+="/usr/lib/udev/napi-set-mac --all"
+
+ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="smsc95xx", \
 	RUN+="/usr/lib/udev/napi-set-mac --all"
