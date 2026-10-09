@@ -1,9 +1,69 @@
-# NAPI EEPROM MAC assignment v12
+# NAPI EEPROM MAC assignment v13 (C)
 
 Назначает сетевым интерфейсам платы NAPI (RK3308) постоянные MAC-адреса из
 EEPROM вместо случайных, которые выдают драйверы (`smsc95xx`, `w5100`).
 
+Ветка `c-port`: программа на C без зависимостей, кроме libc, для образов Yocto.
+Поведение, конфиг, правила udev и коды выхода совпадают с Python-версией v12.1
+из ветки `main`.
+
+## Состав
+
+| Файл | Назначение |
+| --- | --- |
+| `src/` | `napi-set-mac` на C |
+| `tests/test_napi_mac.c` | юнит-тесты: контрольный образ EEPROM, поддельный sysfs |
+| `etc/udev/rules.d/75-napi-mac.rules` | udev-правила (интерфейс, EEPROM, USB-драйвер) |
+| `usr/lib/systemd/system/napi-mac.service` | страховочный проход при загрузке |
+| `etc/napi/mac.conf` | конфиг по умолчанию |
+| `yocto/napi-mac_git.bb` | рецепт Yocto |
+| `install.sh`, `uninstall.sh` | ручная установка на работающую систему |
+
+## Сборка и тесты
+
+```sh
+make                    # build/napi-set-mac
+make test               # юнит-тесты на хосте
+make LDFLAGS=-static    # для платы без подходящей glibc (хост arm64
+                        # или CC=aarch64-linux-gnu-gcc)
+make LDFLAGS=-static build/test-napi-mac.target   # те же тесты для запуска на плате
+make install DESTDIR=... UDEVDIR=... SYSTEMDUNITDIR=... SYSCONFDIR=...
+```
+
+`make install` подставляет `UDEVDIR` в путь к программе в правиле udev и в
+сервисе.
+
+## Yocto
+
+`yocto/napi-mac_git.bb` — рецепт для слоя: собирает через Makefile с
+`CC`/`CFLAGS`/`LDFLAGS` из окружения, ставит программу в
+`${nonarch_base_libdir}/udev`, правило в `.../udev/rules.d`, включает
+`napi-mac.service`, `mac.conf` помечен как `CONFFILES`. Перед релизом
+закрепить `SRCREV` и указать лицензию.
+
 ## История
+
+v13 относительно v12.1:
+
+* `napi-set-mac` переписан на C (`src/`), без Python и `ip(8)`: адрес и
+  down/up меняются через `ioctl` (`SIOCSIFHWADDR`, `SIOCSIFFLAGS`); CRC-32 своя
+  по п. 7 спецификации. Проход сервиса: ~40 мс CPU против ~770 мс у Python;
+* обёртка `napi-set-macs` убрана, сервис вызывает `napi-set-mac --all`;
+* третье udev-правило: `bind` драйвера `smsc95xx` к USB-интерфейсу запускает
+  `--all`. Найдено на Yocto (Napi Linux 0.3.2): два адаптера на разных
+  контроллерах получают одно предсказуемое имя (`enu1u1`), udev отбрасывает
+  событие `add` проигравшего целиком, и если адаптер появился после прохода по
+  EEPROM и сервиса, его MAC никто не ставил;
+* `--version`, `--help`; адрес длиннее Ethernet MAC не сравнивается с
+  обрезкой; имя интерфейса с `/` отклоняется;
+* `install.sh` ставит собранный `build/napi-set-mac` и проверяет, что он
+  запускается на этой машине; рецепт Yocto; `make test`.
+
+Проверено на плате NAPI-C с Napi Linux 0.3.2 (Yocto scarthgap, ядро 6.6):
+юнит-тесты на плате, `--check` совпадает с Python-версией байт в байт,
+установка поверх v12.1, смена MAC на поднятом интерфейсе, `udevadm trigger`,
+unbind/bind USB на обоих контроллерах, поздний `at24`, удаление `--purge`,
+чистая установка, четыре перезагрузки.
 
 v12.1 относительно v12 (проверка на плате NAPI-C, Armbian 26.8, ядро 6.18):
 
@@ -82,26 +142,31 @@ v10 относительно v9:
 | Код | Значение |
 | ---: | --- |
 | 0 | MAC выставлен или уже верный (`--all`/`--check`: без ошибок) |
-| 1 | ошибка: EEPROM, конфиг, `ip(8)` |
+| 1 | ошибка: EEPROM, конфиг, операция с интерфейсом |
 | 3 | интерфейс не описан в конфиге |
 | 4 | интерфейс описан, но EEPROM ещё нет; обработает проход при её появлении |
 
-## Юнит-тесты
+Под udev коды 3 и 4 возвращаются как 0.
 
-```sh
-python3 -m unittest discover -s tests -v
-```
+## Лог
+
+Под udev программа пишет в syslog с тегом `napi-set-mac`, из сервиса и вручную —
+в stdout/stderr. Где искать: `journalctl -t napi-set-mac`; в образах, где
+`/dev/log` занимает busybox-syslogd (Napi Linux 0.3.x), — `/var/log/messages`,
+причём записи udev до старта syslogd теряются. Записи сервиса всегда в
+`journalctl -u napi-mac.service`.
 
 ## Тест на плате
 
 ```sh
+make LDFLAGS=-static            # на хосте
+# скопировать дерево вместе с build/ на плату, затем на плате:
 ./install.sh
 /usr/lib/udev/napi-set-mac --check
 udevadm trigger --subsystem-match=net --action=add
-journalctl -t napi-set-mac --no-pager
 ip -br link
 reboot
-journalctl -b -t napi-set-mac -u napi-mac.service --no-pager
+journalctl -b -u napi-mac.service --no-pager
 ```
 
 Ожидаемое после перезагрузки: строки `napi-set-mac[..]: ethN: usb_eth_M MACK xx:xx:.. OK`
@@ -112,7 +177,7 @@ journalctl -b -t napi-set-mac -u napi-mac.service --no-pager
 ```sh
 echo 1-1.1 > /sys/bus/usb/drivers/usb/unbind
 echo 1-1.1 > /sys/bus/usb/drivers/usb/bind
-journalctl -t napi-set-mac -n 3
+journalctl -t napi-set-mac -n 3     # или tail /var/log/messages
 ```
 
 ## Удаление
