@@ -24,13 +24,16 @@
 #    would set its MAC. The "bind" event comes after the driver has registered
 #    the network interface and does not depend on its name. Add other drivers
 #    here if mac.conf uses them ("driver" key).
+#
+# Debian/Armbian copy this file into the initramfs, where the helper is not
+# present; TEST makes the rules a no-op there instead of failing RUN.
 
-ACTION=="add", SUBSYSTEM=="net", KERNEL!="lo", \
+ACTION=="add", SUBSYSTEM=="net", KERNEL!="lo", TEST=="/usr/lib/udev/napi-set-mac", \
 	ENV{DEVTYPE}!="bridge", ENV{DEVTYPE}!="vlan", ENV{DEVTYPE}!="bond", ENV{DEVTYPE}!="wlan", \
 	RUN+="/usr/lib/udev/napi-set-mac --ifindex $env{IFINDEX}"
 
-ACTION=="bind", SUBSYSTEM=="i2c", KERNEL=="1-0050", DRIVER=="at24", \
+ACTION=="bind", SUBSYSTEM=="i2c", KERNEL=="1-0050", DRIVER=="at24", TEST=="/usr/lib/udev/napi-set-mac", \
 	RUN+="/usr/lib/udev/napi-set-mac --all"
 
-ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="smsc95xx", \
+ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="smsc95xx", TEST=="/usr/lib/udev/napi-set-mac", \
 	RUN+="/usr/lib/udev/napi-set-mac --all"

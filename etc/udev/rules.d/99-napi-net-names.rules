@@ -1,0 +1,33 @@
+# 99-napi-net-names.rules - stable names for the NAPI board network interfaces
+#
+# Part of napi-macs-from-eeprom (replaces the Armbian rule of the same name).
+#
+# Interfaces are matched by ID_PATH: host controller platform name plus port
+# path ("platform-ff440000.usb-usb-0:1.1:1.0"). It does not contain the USB
+# bus number, which depends on the probe order of the controllers (EHCI was
+# seen as bus 2 and bus 3 on the same board), and it differs between the two
+# controllers, unlike the predictable "path" names (enu1u1 on both, which
+# makes one rename fail and udev drop that interface's event).
+#
+# The file is numbered 99 so that NAME= here overrides the name chosen by
+# 80-net-setup-link.rules (.link NamePolicy). On Debian/Armbian it is also
+# copied into the initramfs, so run "update-initramfs -u" after changing it.
+#
+#   lanusb1  ff400000.usb (DWC2 OTG) port 1.1    -> usb_eth_3 in mac.conf
+#   lanusb2  ff400000.usb (DWC2 OTG) port 1.2    -> usb_eth_4
+#   lanusb3  ff440000.usb (EHCI)     port 1.1    -> usb_eth_1
+#   lanusb4  ff440000.usb (EHCI)     port 1.2    -> usb_eth_2
+#   lanw5500 ff140000.spi chip select 0 (SPI2)   -> w5500_spi2
+
+SUBSYSTEM!="net", GOTO="napi_net_names_end"
+ACTION!="add", GOTO="napi_net_names_end"
+
+IMPORT{builtin}="path_id"
+
+ENV{ID_PATH}=="platform-ff400000.usb-usb-0:1.1:1.0", NAME="lanusb1"
+ENV{ID_PATH}=="platform-ff400000.usb-usb-0:1.2:1.0", NAME="lanusb2"
+ENV{ID_PATH}=="platform-ff440000.usb-usb-0:1.1:1.0", NAME="lanusb3"
+ENV{ID_PATH}=="platform-ff440000.usb-usb-0:1.2:1.0", NAME="lanusb4"
+ENV{ID_PATH}=="platform-ff140000.spi-cs-0", NAME="lanw5500"
+
+LABEL="napi_net_names_end"

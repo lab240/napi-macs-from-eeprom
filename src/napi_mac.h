@@ -22,7 +22,7 @@
 #include <syslog.h>
 
 #ifndef NAPI_VERSION
-#define NAPI_VERSION	"13.0"
+#define NAPI_VERSION	"13.1"
 #endif
 
 /* EEPROM v3 layout, little-endian. Only the fields this consumer uses. */

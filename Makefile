@@ -10,7 +10,7 @@
 # Yocto passes CC/CFLAGS/LDFLAGS and the directory variables below
 # (see yocto/napi-mac_git.bb).
 
-VERSION		?= 13.0
+VERSION		?= 13.1
 
 CC		?= cc
 HOSTCC		?= cc
@@ -54,6 +54,7 @@ install: build/napi-set-mac
 	$(FIXPATH) etc/udev/rules.d/75-napi-mac.rules > $(DESTDIR)$(UDEVRULESDIR)/75-napi-mac.rules
 	$(FIXPATH) usr/lib/systemd/system/napi-mac.service > $(DESTDIR)$(SYSTEMDUNITDIR)/napi-mac.service
 	chmod 644 $(DESTDIR)$(UDEVRULESDIR)/75-napi-mac.rules $(DESTDIR)$(SYSTEMDUNITDIR)/napi-mac.service
+	install -m 644 etc/udev/rules.d/99-napi-net-names.rules $(DESTDIR)$(UDEVRULESDIR)/99-napi-net-names.rules
 	install -D -m 644 etc/napi/mac.conf $(DESTDIR)$(SYSCONFDIR)/napi/mac.conf
 
 clean:

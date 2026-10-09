@@ -1,4 +1,4 @@
-# NAPI EEPROM MAC assignment v13 (C)
+# NAPI EEPROM MAC assignment v13.1 (C)
 
 Назначает сетевым интерфейсам платы NAPI (RK3308) постоянные MAC-адреса из
 EEPROM вместо случайных, которые выдают драйверы (`smsc95xx`, `w5100`).
@@ -14,6 +14,7 @@ EEPROM вместо случайных, которые выдают драйве
 | `src/` | `napi-set-mac` на C |
 | `tests/test_napi_mac.c` | юнит-тесты: контрольный образ EEPROM, поддельный sysfs |
 | `etc/udev/rules.d/75-napi-mac.rules` | udev-правила (интерфейс, EEPROM, USB-драйвер) |
+| `etc/udev/rules.d/99-napi-net-names.rules` | имена `lanusb1..4`, `lanw5500` по контроллеру и порту |
 | `usr/lib/systemd/system/napi-mac.service` | страховочный проход при загрузке |
 | `etc/napi/mac.conf` | конфиг по умолчанию |
 | `yocto/napi-mac_git.bb` | рецепт Yocto |
@@ -41,7 +42,47 @@ make install DESTDIR=... UDEVDIR=... SYSTEMDUNITDIR=... SYSCONFDIR=...
 `napi-mac.service`, `mac.conf` помечен как `CONFFILES`. Перед релизом
 закрепить `SRCREV` и указать лицензию.
 
+## Имена интерфейсов
+
+`99-napi-net-names.rules` даёт постоянные имена по `ID_PATH` (контроллер +
+порт), без номера USB-шины:
+
+| Имя | Контроллер, порт | Секция `mac.conf` |
+| --- | --- | --- |
+| `lanusb1` | `ff400000.usb` (DWC2 OTG), 1.1 | `usb_eth_3` |
+| `lanusb2` | `ff400000.usb` (DWC2 OTG), 1.2 | `usb_eth_4` |
+| `lanusb3` | `ff440000.usb` (EHCI), 1.1 | `usb_eth_1` |
+| `lanusb4` | `ff440000.usb` (EHCI), 1.2 | `usb_eth_2` |
+| `lanw5500` | `ff140000.spi`, CS0 (SPI2) | `w5500_spi2` |
+
+Назначение MAC от имён не зависит: `napi-set-mac` сопоставляет адаптеры по
+пути в sysfs.
+
+Файл называется так же, как правило в образе Armbian, и заменяет его:
+`install.sh` сохраняет чужой файл в `/etc/napi/99-napi-net-names.rules.orig`,
+`uninstall.sh` возвращает. Debian/Armbian копируют `/etc/udev/rules.d` в
+initramfs (интерфейсы переименовываются ещё там), поэтому оба скрипта
+вызывают `update-initramfs -u` (около минуты на плате). Правила в
+`75-napi-mac.rules` проверяют наличие программы (`TEST==`), чтобы в initramfs,
+где её нет, ничего не запускалось.
+
 ## История
+
+v13.1 относительно v13:
+
+* `99-napi-net-names.rules`: имена по `ID_PATH`. Правило Armbian сопоставляло
+  `KERNELS=="2-1.1:1.0"`, а номер шины EHCI зависит от порядка инициализации
+  контроллеров (на одной плате бывал 2 и 3); при шине 3 адаптеры оставались
+  `eth2`/`eth3`. В образе Yocto стандартные имена `enu1u1`/`enu1u2` совпадали
+  на двух контроллерах (см. v13). Теперь в обоих образах имена одинаковые и
+  стабильные;
+* `install.sh`/`uninstall.sh`: сохранение и возврат правила Armbian,
+  `update-initramfs -u`; в правилах `75-napi-mac.rules` — `TEST==`.
+
+Проверено на Armbian 26.8 (ядро 6.18): установка, initramfs содержит новые
+правила, принудительная смена номера шины EHCI на лету (отвязка/привязка
+EHCI и OHCI в обратном порядке: шина 2 → 3, имена и MAC сохранились), две
+перезагрузки без сбоев переименования, удаление с возвратом правила Armbian.
 
 v13 относительно v12.1:
 
